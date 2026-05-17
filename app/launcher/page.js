@@ -148,6 +148,13 @@ export default function LauncherListPage() {
             <p className="text-xs text-[#9ca3af] mt-0.5">Last 7 days · auto-refresh every {POLL_INTERVAL_MS / 1000}s while ads are creating</p>
           </div>
           <div className="flex items-center gap-2">
+            <Link
+              href="/launcher/rules"
+              className="text-xs text-[#9ca3af] hover:text-white px-3 py-2 rounded-lg border border-[#1f1f1f] hover:border-[#333]"
+              title="Auto-pause losers, auto-scale winners — runs hourly"
+            >
+              ⚙ Rules
+            </Link>
             <button
               type="button"
               onClick={resetMetaCache}

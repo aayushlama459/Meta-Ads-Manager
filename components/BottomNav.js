@@ -22,6 +22,12 @@ export default function BottomNav() {
           icon={<LaunchIcon />}
         />
         <BottomNavItem
+          href="/chat"
+          label="Chat"
+          active={pathname === '/chat'}
+          icon={<ChatIcon />}
+        />
+        <BottomNavItem
           href="/schedule"
           label="Schedule"
           active={pathname === '/schedule'}
@@ -77,6 +83,14 @@ function HistoryIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-full h-full">
       <polyline points="1,4 1,10 7,10"/>
       <path d="M3.51 15a9 9 0 1 0 .49-4.84"/>
+    </svg>
+  )
+}
+
+function ChatIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-full h-full">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
     </svg>
   )
 }
