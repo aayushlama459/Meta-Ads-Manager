@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { uploadVideo, uploadImage, findTokenForAdAccount } from '@/lib/meta'
-import { isSocialUrl, isDriveUrl, isAdLibraryUrl, extractFirstUrl, downloadViaYtDlp, downloadDirect, downloadFromAdLibrary } from '@/lib/ytdlp'
+import { isSocialUrl, isDriveUrl, isAdLibraryUrl, isTikTokUrl, extractFirstUrl, downloadViaYtDlp, downloadDirect, downloadFromAdLibrary, downloadFromTikwm } from '@/lib/ytdlp'
 import { storePreview } from '@/lib/preview-cache'
 
 export const runtime = 'nodejs'
@@ -110,8 +110,23 @@ export async function POST(request) {
           }
           fetched = await fetchFromGoogleDrive(fileId)
         } else if (isSocialUrl(mediaUrl)) {
-          // TikTok / YouTube / Facebook / Instagram / Twitter / Vimeo — via yt-dlp
-          fetched = await downloadViaYtDlp(mediaUrl)
+          // TikTok / YouTube / Facebook / Instagram / Twitter / Vimeo — via yt-dlp.
+          // TikTok blocks datacenter IPs (Hostinger VPS etc.), so on yt-dlp failure
+          // we fall back to tikwm.com which proxies through residential IPs.
+          try {
+            fetched = await downloadViaYtDlp(mediaUrl)
+          } catch (ytErr) {
+            if (isTikTokUrl(mediaUrl)) {
+              console.warn('[Upload] yt-dlp failed for TikTok, trying tikwm fallback:', ytErr.message)
+              try {
+                fetched = await downloadFromTikwm(mediaUrl)
+              } catch (tikwmErr) {
+                throw new Error(`yt-dlp said "${ytErr.message}"; tikwm fallback said "${tikwmErr.message}"`)
+              }
+            } else {
+              throw ytErr
+            }
+          }
         } else {
           // Generic direct URL (S3, Dropbox direct, CDN, etc.)
           fetched = await downloadDirect(mediaUrl)
