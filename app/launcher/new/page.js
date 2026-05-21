@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Combobox from '@/components/Combobox'
+import { loadDraft, saveDraft, clearDraft } from '@/lib/launcher-draft'
 
 const OBJECTIVES = [
   { value: 'OUTCOME_SALES', label: 'Sales' },
@@ -131,6 +132,16 @@ export default function LauncherPage() {
   // When set, a modal pops up to play this media item. Cleared on close.
   const [previewItem, setPreviewItem] = useState(null)
 
+  // ── Draft Auto-Save ───────────────────────────────────────────────────────
+  // null = not yet checked; { savedAt } = restored from localStorage on mount
+  const [draftRestored, setDraftRestored] = useState(null)
+  // Set to true right before we restore form.adAccountId from a draft so the
+  // pageId/pixelId reset effect doesn't immediately wipe our restored selections.
+  const skipNextAcctReset = useRef(false)
+  // Wait until restore finishes before we start saving — otherwise the initial
+  // empty render would overwrite the saved draft on mount.
+  const draftRestoreDoneRef = useRef(false)
+
   // ── Fetch accounts on load ───────────────────────────────────────────────
   useEffect(() => {
     fetch('/api/launcher/accounts').then(r => r.json()).then(d => { if (d.success) setAccounts(d.data) })
@@ -188,8 +199,13 @@ export default function LauncherPage() {
       setForm(f => ({ ...f, pageId: '', pixelId: '' }))
       return
     }
-    // Reset selections
-    setForm(f => ({ ...f, pageId: '', pixelId: '' }))
+    // Reset selections — UNLESS this fired because draft restore just set the
+    // account; in that case, keep the restored pageId/pixelId intact.
+    if (skipNextAcctReset.current) {
+      skipNextAcctReset.current = false
+    } else {
+      setForm(f => ({ ...f, pageId: '', pixelId: '' }))
+    }
     // Fetch pages valid for this account
     fetch(`/api/launcher/pages?adAccountId=${form.adAccountId}`)
       .then(r => r.json()).then(d => { if (d.success) setPages(d.data) })
@@ -197,6 +213,77 @@ export default function LauncherPage() {
     fetch(`/api/launcher/pixels?adAccountId=${form.adAccountId}`)
       .then(r => r.json()).then(d => { if (d.success) setPixels(d.data) })
   }, [form.adAccountId])
+
+  // ── Restore draft on mount (skip if ?duplicate= flow is in progress) ──────
+  useEffect(() => {
+    if (duplicateId) {
+      draftRestoreDoneRef.current = true  // duplicate flow owns the page state
+      return
+    }
+    const draft = loadDraft()
+    if (!draft) {
+      draftRestoreDoneRef.current = true
+      return
+    }
+    if (draft.form && typeof draft.form === 'object') {
+      if (draft.form.adAccountId) skipNextAcctReset.current = true
+      setForm(prev => ({ ...prev, ...draft.form }))
+    }
+    if (Array.isArray(draft.copyVariants) && draft.copyVariants.length) {
+      setCopyVariants(draft.copyVariants)
+      const maxN = draft.copyVariants.reduce((m, v) => {
+        const match = typeof v.key === 'string' && v.key.match(/^cv_(\d+)/)
+        return match ? Math.max(m, parseInt(match[1], 10)) : m
+      }, 0)
+      cvKeyRef.current = maxN
+    }
+    if (typeof draft.activeVariantIdx === 'number') {
+      setActiveVariantIdx(draft.activeVariantIdx)
+    }
+    if (Array.isArray(draft.adSetsList) && draft.adSetsList.length) {
+      setAdSetsList(draft.adSetsList)
+    }
+    if (Array.isArray(draft.mediaItems) && draft.mediaItems.length) {
+      setMediaItems(draft.mediaItems)
+      const maxN = draft.mediaItems.reduce((m, it) => {
+        const match = typeof it.key === 'string' && it.key.match(/^m_(\d+)_/)
+        return match ? Math.max(m, parseInt(match[1], 10)) : m
+      }, 0)
+      keyCounterRef.current = maxN
+    }
+    setDraftRestored({ savedAt: draft.savedAt || null })
+    draftRestoreDoneRef.current = true
+  }, [duplicateId])
+
+  // ── Auto-save draft on any meaningful state change (debounced) ────────────
+  useEffect(() => {
+    if (!draftRestoreDoneRef.current) return  // don't clobber the draft during initial restore
+    const timer = setTimeout(() => {
+      // Only persist media items that finished uploading — the others have
+      // ephemeral File/Blob refs that wouldn't survive a reload anyway.
+      const persistedMedia = mediaItems
+        .filter(m => m.status === 'done')
+        .map(m => ({
+          key: m.key,
+          name: m.name,
+          mediaType: m.mediaType,
+          status: m.status,
+          mediaId: m.mediaId,
+          mediaHash: m.mediaHash,
+          previewId: m.previewId,
+          source: m.source,
+        }))
+      saveDraft({
+        form,
+        copyVariants,
+        activeVariantIdx,
+        adSetsList,
+        mediaItems: persistedMedia,
+        savedAt: Date.now(),
+      })
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [form, copyVariants, activeVariantIdx, adSetsList, mediaItems])
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
@@ -463,6 +550,7 @@ export default function LauncherPage() {
       }
       // Queued — go back to the campaign list so the user can watch progress
       // there and start preparing the next launch.
+      clearDraft()  // launch succeeded; the autosaved draft is no longer relevant
       router.push(`/launcher?newJob=${encodeURIComponent(data.jobId)}`)
     } catch (err) {
       setLaunchResult({ success: false, error: err.message })
@@ -555,6 +643,24 @@ export default function LauncherPage() {
       {duplicateBanner && (
         <div className="max-w-4xl mx-auto px-4 sm:px-6 mt-4 p-3 rounded-lg border border-[#4f46e5]/30 bg-[#4f46e5]/10 text-indigo-300 text-sm">
           📋 Duplicated from <span className="font-semibold text-white">{duplicateBanner.sourceName}</span> — settings pre-filled. Upload fresh media and tweak anything before launching.
+        </div>
+      )}
+
+      {draftRestored && (
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 mt-4 p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 text-sm flex items-center justify-between gap-3">
+          <div>
+            💾 Restored your in-progress draft{draftRestored.savedAt ? ` (saved ${new Date(draftRestored.savedAt).toLocaleString()})` : ''}. Keep editing where you left off.
+          </div>
+          <button
+            onClick={() => {
+              if (!confirm('Discard the saved draft and start with a blank form? This cannot be undone.')) return
+              clearDraft()
+              window.location.href = '/launcher/new'
+            }}
+            className="shrink-0 px-3 py-1.5 rounded-md border border-emerald-500/40 hover:bg-emerald-500/20 text-xs font-medium transition-colors"
+          >
+            Start fresh
+          </button>
         </div>
       )}
 
