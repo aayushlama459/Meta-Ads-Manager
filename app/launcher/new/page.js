@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Combobox from '@/components/Combobox'
 import { loadDraft, saveDraft, clearDraft } from '@/lib/launcher-draft'
+import { loadWatermarkHistory, pushWatermarkHistory } from '@/lib/watermark-history'
 
 const OBJECTIVES = [
   { value: 'OUTCOME_SALES', label: 'Sales' },
@@ -64,6 +65,9 @@ export default function LauncherPage() {
     // Optional scheduled start — blank = launch immediately
     scheduleDate: '',           // YYYY-MM-DD (Nepal local)
     scheduleTime: '',           // HH:MM (Nepal local)
+    // Optional text watermark burned into uploaded videos (server-side ffmpeg)
+    watermarkEnabled: false,
+    watermarkText: '',
   })
 
   // Copy variants — one ad is created per (media × variant) combination.
@@ -131,6 +135,9 @@ export default function LauncherPage() {
   const [launchResult, setLaunchResult] = useState(null)  // null | { success, ... }
   // When set, a modal pops up to play this media item. Cleared on close.
   const [previewItem, setPreviewItem] = useState(null)
+  // Recently-used watermark strings (last 5) shown as quick-select chips.
+  const [watermarkHistory, setWatermarkHistory] = useState([])
+  useEffect(() => { setWatermarkHistory(loadWatermarkHistory()) }, [])
 
   // ── Draft Auto-Save ───────────────────────────────────────────────────────
   // null = not yet checked; { savedAt } = restored from localStorage on mount
@@ -306,6 +313,8 @@ export default function LauncherPage() {
       const fd = new FormData()
       fd.append('file', item.file)
       fd.append('adAccountId', form.adAccountId)
+      const wm = form.watermarkEnabled ? form.watermarkText.trim() : ''
+      if (wm) fd.append('watermarkText', wm)
 
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
@@ -326,6 +335,10 @@ export default function LauncherPage() {
             mediaHash: data.type === 'image' ? data.hash : undefined,
             previewId: data.previewId || undefined,
           })
+          if (wm && data.type === 'video') {
+            pushWatermarkHistory(wm)
+            setWatermarkHistory(loadWatermarkHistory())
+          }
           resolve(true)
         } catch (err) {
           updateItem(item.key, { status: 'error', errorMsg: err.message })
@@ -408,12 +421,13 @@ export default function LauncherPage() {
     setMediaItems((items) => [...items, item])
     setDriveUrl('')
 
+    const wm = form.watermarkEnabled ? form.watermarkText.trim() : ''
     try {
       // URL path can't show real progress — indeterminate state
       const res = await fetch('/api/launcher/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mediaUrl: url, adAccountId: form.adAccountId }),
+        body: JSON.stringify({ mediaUrl: url, adAccountId: form.adAccountId, watermarkText: wm || undefined }),
       })
       // Read as text first so we can give a useful error even when the server
       // dies mid-response (no body) or returns HTML instead of JSON.
@@ -436,6 +450,10 @@ export default function LauncherPage() {
         mediaHash: data.type === 'image' ? data.hash : undefined,
         previewId: data.previewId || undefined,
       })
+      if (wm && data.type === 'video') {
+        pushWatermarkHistory(wm)
+        setWatermarkHistory(loadWatermarkHistory())
+      }
     } catch (err) {
       updateItem(item.key, { status: 'error', errorMsg: err.message })
     }
@@ -860,6 +878,55 @@ export default function LauncherPage() {
           <div className="bg-[#111111] rounded-xl border border-[#1f1f1f]">
             <CardHeader step={3} title="Creative Media" isComplete={readyMedia.length > 0} />
             <div className="p-5">
+              {/* Watermark — burned into uploaded videos server-side via ffmpeg.
+                  Images bypass this; only videos get the overlay. */}
+              <div className="mb-4 bg-[#1a1a1a] border border-[#333333] rounded-lg p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-[#e5e7eb]">💧 Video Watermark</span>
+                    <span className="text-[10px] text-[#9ca3af]">— small, low opacity, animated</span>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={form.watermarkEnabled}
+                      onChange={e => set('watermarkEnabled', e.target.checked)}
+                    />
+                    <div className="w-9 h-5 bg-[#333333] peer-focus:ring-2 peer-focus:ring-[#4f46e5] rounded-full peer peer-checked:bg-[#4f46e5] transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-transform peer-checked:after:translate-x-4"></div>
+                  </label>
+                </div>
+                {form.watermarkEnabled && (
+                  <div className="mt-3 space-y-2">
+                    <input
+                      type="text"
+                      placeholder="e.g. +977-9800000000 or your brand name"
+                      value={form.watermarkText}
+                      onChange={e => set('watermarkText', e.target.value)}
+                      className="w-full bg-[#111111] text-white placeholder-[#6b7280] border border-[#333333] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4f46e5] focus:border-[#4f46e5]"
+                    />
+                    {watermarkHistory.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        <span className="text-[10px] text-[#6b7280] self-center mr-1">Recent:</span>
+                        {watermarkHistory.map(text => (
+                          <button
+                            key={text}
+                            type="button"
+                            onClick={() => set('watermarkText', text)}
+                            className={`text-[11px] px-2 py-0.5 rounded-md border transition-colors ${form.watermarkText === text ? 'bg-[#4f46e5]/20 border-[#4f46e5]/50 text-[#a5b4fc]' : 'bg-[#111111] border-[#333333] text-[#9ca3af] hover:border-[#4f46e5]/40 hover:text-white'}`}
+                          >
+                            {text}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-[10px] text-[#6b7280] leading-snug">
+                      Adds ~30s–2min per video on the VPS. Images skip this step. Existing uploaded videos aren't re-watermarked.
+                    </p>
+                  </div>
+                )}
+              </div>
+
               {/* Source Tabs */}
               <div className="flex gap-2 mb-4 bg-[#1a1a1a] p-1 rounded-lg border border-[#333333]">
                 <button

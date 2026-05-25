@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { uploadVideo, uploadImage, findTokenForAdAccount } from '@/lib/meta'
 import { isSocialUrl, isDriveUrl, isAdLibraryUrl, isTikTokUrl, extractFirstUrl, downloadViaYtDlp, downloadDirect, downloadFromAdLibrary, downloadFromTikwm } from '@/lib/ytdlp'
 import { storePreview } from '@/lib/preview-cache'
+import { applyTextWatermark } from '@/lib/watermark'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -70,6 +71,7 @@ export async function POST(request) {
     const contentType = request.headers.get('content-type') || ''
 
     let buffer, fileName, mimeType, adAccountId, previewId = null
+    let watermarkText = ''  // empty = watermarking disabled
 
     if (contentType.includes('application/json')) {
       const body = await request.json()
@@ -77,6 +79,7 @@ export async function POST(request) {
       // Strip any surrounding share-text so "Check out this TikTok! https://..." works.
       const mediaUrl = extractFirstUrl(rawInput)
       adAccountId = body.adAccountId
+      watermarkText = (body.watermarkText || '').trim()
       if (!mediaUrl || !adAccountId) {
         return NextResponse.json({ success: false, error: 'mediaUrl and adAccountId are required' }, { status: 400 })
       }
@@ -145,6 +148,7 @@ export async function POST(request) {
       const formData = await request.formData()
       const file = formData.get('file')
       adAccountId = formData.get('adAccountId')
+      watermarkText = (formData.get('watermarkText') || '').toString().trim()
       if (!file || !adAccountId) {
         return NextResponse.json({ success: false, error: 'file and adAccountId are required' }, { status: 400 })
       }
@@ -169,6 +173,22 @@ export async function POST(request) {
         previewId,
       })
     } else {
+      // Optional text watermark — burned in via ffmpeg before the Meta upload.
+      // Skipped silently when no text is provided so legacy callers and the
+      // toggle-off case both take the zero-overhead path.
+      if (watermarkText) {
+        const t0 = Date.now()
+        try {
+          buffer = await applyTextWatermark(buffer, watermarkText)
+          const newMb = (buffer.length / 1024 / 1024).toFixed(1)
+          console.log(`[Upload] watermarked "${watermarkText}" in ${Date.now() - t0}ms → ${newMb} MB`)
+          // Refresh preview cache with the watermarked bytes so the UI shows the actual uploaded file
+          if (previewId) previewId = storePreview(buffer, mimeType)
+        } catch (wmErr) {
+          console.error('[Upload] watermark failed:', wmErr.message)
+          return NextResponse.json({ success: false, error: `Watermark failed: ${wmErr.message}` }, { status: 500 })
+        }
+      }
       const result = await uploadVideo(token, adAccountId, buffer, fileName, mimeType)
       return NextResponse.json({
         success: true,
